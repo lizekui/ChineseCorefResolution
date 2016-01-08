@@ -46,8 +46,8 @@ public class CorefFullExample {
 	public static void main(String[] args) throws Exception {
 		long startTime = System.currentTimeMillis();
 
-		String templine = "飘下了两片柳叶，柳树爷爷把牙都笑掉啦！";
-		String question = "牙";
+		String templine = "小青枣慢慢变成大红枣，枣树像挂满了小灯笼。";
+		String question = "小灯笼";
 //		lexicons_pronouns = initial_lexicon();
 //		ArrayList<String> mentions = new ArrayList<>();
 //		mentions.add("我聪明的小宝宝");
@@ -260,6 +260,7 @@ public class CorefFullExample {
 				have_vv = true;
 			if(lexicons_punctuations.contains(temp_word))	
 				have_punc = true;
+//			System.out.println(temp_word+"******"+temp_pos+"******"+have_vv+"******"+have_punc);
 		}
 		if(!have_punc && have_vv)	return true;//两个mention中间有标点，证明已经不是一句话了 不是SBV的概率会大一些
 		return false;
@@ -279,9 +280,22 @@ public class CorefFullExample {
 	 */
 	private static int findBeforeNearestIndex(ArrayList<String> list_word, String question, String mention_candi_NN) {
 		// TODO Auto-generated method stub
+		//question id
 		int question_id = 0;
+		int max_similarity = -1;
 		for (int i = 0; i < list_word.size(); i++) 
-			if(list_word.get(i).contains(question))	question_id = i;
+		{
+			String current_word = list_word.get(i);
+			if(current_word.contains(question) || question.contains(current_word))
+			{
+				if(max_similarity<=current_word.length())
+				{
+					question_id = i;
+					max_similarity=current_word.length();
+				}				
+			}
+		}
+		//mention_candi_NN index
 		for(int index = question_id; index>-1 ; index--)
 			if(list_word.get(index).contains(mention_candi_NN) || mention_candi_NN.contains(list_word.get(index)))	return index;
 		return 0;
@@ -533,6 +547,25 @@ public class CorefFullExample {
 				list_word.add(word_before_de+word+word_after_de);
 				list_pos.add("DNP");
 				i+=(after_index-i-1);//往前跳N个词数
+			}
+			if(pos.contains("NN"))//小 苹果 合并成NP
+			{
+				String word_nn = list_word.get(list_word.size()-1);
+				String word_before_nn = "";
+				int index_before_nn = list_word.size()-2;
+				if(index_before_nn>-1)
+				{
+					if(list_pos.get(index_before_nn).equals("JJ"))
+					{
+						word_before_nn = list_word.get(index_before_nn);
+						list_word.remove(list_word.size()-1);
+						list_pos.remove(list_pos.size()-1);
+						list_word.remove(list_word.size()-1);
+						list_pos.remove(list_pos.size()-1);
+						list_word.add(word_before_nn+word_nn);
+						list_pos.add("NP");
+					}
+				}
 			}
 		}
 	}
