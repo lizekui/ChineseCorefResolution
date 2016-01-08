@@ -16,14 +16,25 @@ import edu.stanford.nlp.ling.CoreAnnotations.TokensAnnotation;
 import edu.stanford.nlp.ling.CoreLabel;
 import edu.stanford.nlp.pipeline.Annotation;
 import edu.stanford.nlp.pipeline.StanfordCoreNLP;
+import edu.stanford.nlp.semgraph.SemanticGraph;
+import edu.stanford.nlp.semgraph.SemanticGraphCoreAnnotations;
 import edu.stanford.nlp.trees.Tree;
 import edu.stanford.nlp.trees.TreeCoreAnnotations;
 import edu.stanford.nlp.util.CoreMap;
 import edu.stanford.nlp.util.StringUtils;
 
+/**
+ * 对文件进行消解操作
+ * 输入文件格式 ： 句子\t 问题mention\t 标准答案
+ * @author zkli
+ *
+ */
 public class CorefFileExample {
-	public static HashSet<String> lexicons_pronouns = new HashSet<>();
+	public static boolean MODE_DEBUG = false;
 	
+	public static HashSet<String> lexicons_pronouns = new HashSet<>();
+	public static HashSet<String> lexicons_verb_whitelist = new HashSet<>();
+	public static HashSet<String> lexicons_punctuations = new HashSet<>();
 	
 	public static void main(String[] args) throws Exception {
 		long startTime=System.currentTimeMillis();
@@ -31,12 +42,12 @@ public class CorefFileExample {
 		args = new String[] {"-props", "edu/stanford/nlp/hcoref/properties/zh-coref-default.properties" };
 		Properties props = StringUtils.argsToProperties(args);
 		StanfordCoreNLP pipeline = new StanfordCoreNLP(props);
+		initial_lexicon();
 		
 		try {
-//			BufferedReader reader = new BufferedReader(new FileReader("test_zkli/pronoun_resolution.txt"));
-			BufferedReader reader = new BufferedReader(new FileReader("test_zkli/gold_ans_np_resolution.txt"));
+			BufferedReader reader = new BufferedReader(new FileReader("test_zkli/gold_ans_pronoun_resolution.txt"));
+//			BufferedReader reader = new BufferedReader(new FileReader("test_zkli/gold_ans_np_resolution.txt"));
 			String templine = "";
-			lexicons_pronouns = initial_lexicon();
 			int linecount = 0;
 			while ((templine = reader.readLine()) != null) {
 				linecount++;
@@ -55,42 +66,43 @@ public class CorefFileExample {
 				for (CoreMap sentence : document.get(CoreAnnotations.SentencesAnnotation.class)) {
 					ruleBasedNPMentionCombine(sentence, list_word, list_pos);
 					
-					Tree tree = sentence.get(TreeCoreAnnotations.TreeAnnotation.class);
-					tree.pennPrint(System.out);
-//					System.out.println(sentence.get(SemanticGraphCoreAnnotations.BasicDependenciesAnnotation.class).toString(SemanticGraph.OutputFormat.LIST));
+					if(MODE_DEBUG)
+					{
+						Tree tree = sentence.get(TreeCoreAnnotations.TreeAnnotation.class);
+						tree.pennPrint(System.out);
+						System.out.println(sentence.get(SemanticGraphCoreAnnotations.BasicDependenciesAnnotation.class).
+								toString(SemanticGraph.OutputFormat.LIST));
+					}
 
 					for (Mention m : sentence.get(CorefCoreAnnotations.CorefMentionsAnnotation.class)) {
 						mentions.add(m.toString().replaceAll(" ", ""));
 					}
 				}
 				
-				System.out.println("---\ncombine word/pos list");
-				for (int i = 0; i < list_word.size(); i++) {
-					System.out.println(list_word.get(i) + "\t" + list_pos.get(i));
+				if(MODE_DEBUG)
+				{
+					System.out.println("---\ncombine word/pos list");
+					for (int i = 0; i < list_word.size(); i++) {
+						System.out.println(list_word.get(i) + "\t" + list_pos.get(i));
+					}
 				}
 				
-				System.out.println("---");
-				System.out.println("coref chains via CoreNLP");
+				if(MODE_DEBUG)	System.out.println("---\ncoref chains via CoreNLP");
 				ArrayList<String> res_corenlp = new ArrayList<>();
 				for (CorefChain cc : document.get(CorefCoreAnnotations.CorefChainAnnotation.class).values()) {
 					String filtered_cc = ruleCorefFilter(cc.toString());
 					if(filtered_cc.equals(""))	continue;
-					System.out.println("\t" + filtered_cc);
+					if(MODE_DEBUG)	System.out.println("\t" + filtered_cc);
 					res_corenlp.add(filtered_cc);
 					
 				}
 				System.out.println(">>>result via CoreNLP");
-				for(String pair : res_corenlp)
-				{
-					String pronoun_extracted = pair.split("\t")[1];
-					if(pronoun_extracted.contains(question) || question.contains(pronoun_extracted))
-						System.out.println("\t" + pair);
-				}
+				String res_stanford = stanfordBasedResolution(res_corenlp, question);
 				
+				if(MODE_DEBUG)	System.out.println("---\ncoref chains via rules");
+				String res_rules = ruleBasedResolution(text, question, mentions, list_word, list_pos);
 				
-				System.out.println("---");
-				System.out.println("coref chains via rules");
-				ruleBasedResolution(text, question, mentions, list_word, list_pos);
+				output_final_result(res_stanford, res_rules);
 			}
 			reader.close();
 		} catch (Exception e) {
@@ -102,6 +114,43 @@ public class CorefFileExample {
 		System.out.println("Running time "+time/60+"min "+time%60+"s");
 	}
 	
+
+	/**
+	 * 找出res list中和question相关的mention
+	 * @param res_corenlp
+	 * @param question
+	 * @return
+	 */
+	private static String stanfordBasedResolution(ArrayList<String> res_corenlp, String question) {
+		// TODO Auto-generated method stub
+		String res_stanford = "";
+		for(String pair : res_corenlp)
+		{
+			String pronoun_extracted = pair.split("\t")[1];
+			if(pronoun_extracted.contains(question) || question.contains(pronoun_extracted))
+			{
+				System.out.println("\t" + pair);
+				res_stanford = pair;	
+			}
+		}
+		return res_stanford;
+	}
+
+
+	/**
+	 * 如果stanford消解有结果，则使用stanford的；
+	 * 如果没有，则用我们的rules(绝大部分进入这部分)
+	 * @param res_stanford
+	 * @param res_rules
+	 */
+	private static void output_final_result(String res_stanford, String res_rules) {
+		// TODO Auto-generated method stub
+		System.out.println(">>>>>>FINAL ANSWER>>>>>>");
+		if(!res_stanford.equals(""))	System.out.println(res_stanford);
+		else System.out.println(res_rules);
+	}
+
+
 	/**
 	 * 分为 代词指代 和 名词短语 指代
 	 * @param templine
@@ -110,14 +159,17 @@ public class CorefFileExample {
 	 * @param list_word
 	 * @param list_pos
 	 */
-	private static void ruleBasedResolution(String templine, String question, ArrayList<String> mentions, ArrayList<String> list_word,
+	private static String ruleBasedResolution(String templine, String question, ArrayList<String> mentions, ArrayList<String> list_word,
 			ArrayList<String> list_pos) {
 		//mention reduce result
 		ArrayList<String> mentions_reduce = reduce_mentions(mentions);
 		//pronoun resolution
-		ruleBasedPronounMentionsExtract(templine, question, mentions, mentions_reduce);
+		String res_pronoun = ruleBasedPronounMentionsExtract(templine, question, mentions, mentions_reduce);
 		//np resolution
-		ruleBasedNPMentionsExtract(templine, question, mentions_reduce, list_word, list_pos);
+		String res_np = ruleBasedNPMentionsExtract(templine, question, mentions_reduce, list_word, list_pos);
+		
+		if(!res_pronoun.equals(""))	return res_pronoun;//优先代词指代
+		else return res_np;//如果代词指代为空，则为名词短语指代结果
 	}
 
 	/**
@@ -128,30 +180,35 @@ public class CorefFileExample {
 	 * @param list_word
 	 * @param list_pos
 	 */
-	private static void ruleBasedNPMentionsExtract(String templine, String question, ArrayList<String> mentions_reduce,
+	private static String ruleBasedNPMentionsExtract(String templine, String question, ArrayList<String> mentions_reduce,
 			ArrayList<String> list_word, ArrayList<String> list_pos) 
 	{
+		//给压缩后的mentions标注上pos信息，这样可以后面用
 		ArrayList<String> mentions_reduce_pos = new ArrayList<>();
 		for(String mention : mentions_reduce)
 		{
 			String pos_temp = "";
 			int min_count = 1000000;//碰到最长相似度的词就停止
 			for(String word : list_word)
-				if(mention.contains(word) && Math.abs(word.length()-mention.length())<min_count)
+				if(mention.contains(word) && Math.abs(word.length()-mention.length())<=min_count)
 				{
 					min_count = Math.abs(word.length()-mention.length());
 					pos_temp = list_pos.get(list_word.indexOf(word));
 				}
-					
-			mentions_reduce_pos.add(pos_temp);
+			if(pos_temp.equals(""))
+				mentions_reduce_pos.add("Unk");
+			else
+				mentions_reduce_pos.add(pos_temp);
 		}
 		
-		System.out.println("---\nmentions pos alignment");
-		for (int i = 0; i < mentions_reduce.size(); i++) {
-			System.out.println(mentions_reduce.get(i) + "\t" + mentions_reduce_pos.get(i));
-		}
+		if(MODE_DEBUG)	
+		{
+			System.out.println("---\nmentions pos alignment");
+			for (int i = 0; i < mentions_reduce.size(); i++) 
+				System.out.println(mentions_reduce.get(i) + "\t" + mentions_reduce_pos.get(i));
+		}	
 		System.out.println(">>>rules of noun phrase");
-		String res_pair = "";
+		String final_result_mention = "";
 		for (int i = 0; i < mentions_reduce.size(); i++) {
 			String mention = mentions_reduce.get(i);
 			if(mention.contains(question) || question.contains(mention))//mention前后找NN DNP
@@ -165,7 +222,7 @@ public class CorefFileExample {
 				if((index_before>-1) && (mentions_reduce_pos.get(index_before).contains("NN")||mentions_reduce_pos.get(index_before).contains("NP")
 						||mentions_reduce_pos.get(index_before).contains("NR")))
 				{
-					//XX v NN 表明不可能为指代关系，只可能为主谓关系, eg 树挂满小灯笼
+					//XX v NN 表明不可能为指代关系，只可能为主谓关系, eg 树好像挂满了小灯笼
 					String mention_before_candi_NN = mentions_reduce.get(index_before);
 					if(!(have_vv_between_two_mentions(list_word, list_pos, question, mention_before_candi_NN)))
 						mention_before = mentions_reduce.get(index_before);
@@ -191,13 +248,42 @@ public class CorefFileExample {
 					if((index_after<mentions_reduce.size()) && (mentions_reduce_pos.get(index_after).contains("NN")||mentions_reduce_pos.get(index_after).contains("NP")
 							||mentions_reduce_pos.get(index_after).contains("NR")))
 						mention_after = mentions_reduce.get(index_after);
-					res_pair = mention_after;//最后如果找不到就是NULL
+					final_result_mention = mention_after;//最后如果找不到就是NULL
 				}
 				else
-					res_pair = mention_before;
+					final_result_mention = mention_before;
 			}
 		}
-		System.out.println("\t" + res_pair + "\t" + question);
+		if(final_result_mention.equals("") || final_result_mention.contains(question))//如果找不到的话，就最近的一个NN代替 
+		{
+			final_result_mention = "";
+			int index_question = list_word.indexOf(question);
+			for (int i = index_question-1; i > -1 && final_result_mention.equals(""); i--) //往前找
+			{
+				if(list_pos.get(i).contains("NN") || list_pos.get(i).contains("NP") || list_pos.get(i).contains("NR"))
+					final_result_mention = list_word.get(i);
+				if(final_result_mention.contains(question))//如果含有的话
+					final_result_mention = "";
+			}
+			if(final_result_mention.equals(""))//前面没有往后找
+			{
+				for (int i = index_question+1; i < list_word.size() && final_result_mention.equals(""); i++) //往前找
+				{
+					if(final_result_mention.contains(question))	continue;
+					if(list_pos.get(i).contains("NN") || list_pos.get(i).contains("NP") || list_pos.get(i).contains("NR"))
+						final_result_mention = list_word.get(i);
+					if(final_result_mention.contains(question))
+						final_result_mention = "";
+				}
+			}	
+		}
+		String res_np = "";
+		if(!final_result_mention.equals(""))
+		{
+			System.out.println("\t" + final_result_mention + "\t" + question);
+			res_np = final_result_mention + "\t" + question;
+		}
+		return res_np;
 	}
 
 	/**
@@ -218,12 +304,21 @@ public class CorefFileExample {
 			if(question_index>mention_before_candi_NN_index && list_word.get(i).contains(question))
 				question_index = i;
 		}//找到candidate后面第一个出现question坐标的地方
+		boolean have_vv = false;
+		boolean have_punc = false;//老猫就会绕着这只小猫不停地转，好像在问：“小宝贝，你哪里不舒服？
 		for (int i = mention_before_candi_NN_index+1 ; i<question_index && i<list_word.size(); i++) {
-			if(list_pos.get(i).contains("VV"))	return true;
+			String temp_pos = list_pos.get(i);
+			String temp_word = list_word.get(i);
+			if((temp_pos.contains("VV") || temp_pos.contains("BA")) && 
+					!lexicons_verb_whitelist.contains(temp_word))	
+				have_vv = true;
+			if(lexicons_punctuations.contains(temp_word))	
+				have_punc = true;
 		}
+		if(!have_punc && have_vv)	return true;//两个mention中间有标点，证明已经不是一句话了 不是SBV的概率会大一些
 		return false;
 	}
-	
+
 	/**
 	 * 有这么一种情况
 	 * >>> 他高兴地喊：“妈妈，你看我的小白兔！” 妈妈看着儿子的作品
@@ -238,11 +333,11 @@ public class CorefFileExample {
 	 */
 	private static int findBeforeNearestIndex(ArrayList<String> list_word, String question, String mention_candi_NN) {
 		// TODO Auto-generated method stub
-		if(list_word.contains(question))
-		{
-			for(int index_begin = list_word.indexOf(question); index_begin>-1 ; index_begin--)
-				if(list_word.get(index_begin).equals(mention_candi_NN))	return index_begin;
-		}
+		int question_id = 0;
+		for (int i = 0; i < list_word.size(); i++) 
+			if(list_word.get(i).contains(question))	question_id = i;
+		for(int index = question_id; index>-1 ; index--)
+			if(list_word.get(index).contains(mention_candi_NN) || mention_candi_NN.contains(list_word.get(index)))	return index;
 		return 0;
 	}
 
@@ -284,7 +379,7 @@ public class CorefFileExample {
 	 * @param list_pos 
 	 * @param list_word 
 	 */
-	private static void ruleBasedPronounMentionsExtract(String text, String question, ArrayList<String> mentions, ArrayList<String> mentions_reduce) {
+	private static String ruleBasedPronounMentionsExtract(String text, String question, ArrayList<String> mentions, ArrayList<String> mentions_reduce) {
 		//1. speaker me
 		ArrayList<String> res = new ArrayList<>();
 		if(text.contains("说"))
@@ -297,11 +392,6 @@ public class CorefFileExample {
 				if(text.contains("你"))
 				{
 					final_mention = get_str_between_words(text, "对", "说");
-//					System.out.println(text);
-//					System.out.println(text.substring(text.indexOf("对")+1));
-//					System.out.println(text.indexOf("对")+1);
-//					System.out.println(text.substring(text.indexOf("对")+1).indexOf("说"));
-//					System.out.println(text.indexOf("说"));
 					if(!lexicons_pronouns.contains(final_mention))//先行词不能是代词了
 					{
 						if(text.contains("你们"))
@@ -388,18 +478,23 @@ public class CorefFileExample {
 			if(!pronoun_deweight.contains(chain.split("\t")[1]))
 			{
 				pronoun_deweight.add(chain.split("\t")[1]);
-				System.out.println("\t" + chain.trim());
+				if(MODE_DEBUG)	System.out.println("\t" + chain.trim());
 				chains.add(chain.trim());
 			}
 		}
 		//find answer
 		System.out.println(">>>result via rule pronoun");
+		String final_pronoun = "";
 		for(String pair : chains)
 		{
 			String pronoun_extracted = pair.split("\t")[1];
 			if(pronoun_extracted.contains(question) || question.contains(pronoun_extracted))
+			{
+				final_pronoun = pair;
 				System.out.println("\t" + pair);
+			}
 		}
+		return final_pronoun;
 	}
 	
 	/**
@@ -454,8 +549,6 @@ public class CorefFileExample {
 		for (CoreLabel token : sentence.get(TokensAnnotation.class)) {
 			String word = token.get(TextAnnotation.class);
 			String pos = token.get(PartOfSpeechAnnotation.class);
-//			String ne = token.get(NamedEntityTagAnnotation.class);
-//			System.out.println(word+"\t"+pos+"\t"+ne);
 			tmp_list_word.add(word);
 			tmp_list_pos.add(pos);
 		}
@@ -471,10 +564,9 @@ public class CorefFileExample {
 				if(list_word.size()-2>-1)
 					word_before_de = list_word.get(list_word.size()-2);
 				int before_index = list_word.size()-3;
-				for(; before_index > -1; before_index--)
+				for(; before_index > -1 && (list_pos.get(before_index).equals("JJ") || list_pos.get(before_index).equals("AD"))
+						; before_index--)
 				{
-					if(!list_pos.get(before_index).equals("JJ") && !list_pos.get(before_index).equals("AD"))
-						break;		
 					word_before_de = list_word.get(before_index) + word_before_de;
 				}
 				
@@ -489,7 +581,7 @@ public class CorefFileExample {
 				}
 					
 				int count_before = list_word.size()-before_index;//if == 3 delete 2 words ; ==4 delete 3 words
-				for(int count = 0; count<count_before; count++)
+				for(int count = 0; count<count_before-1; count++)
 				{
 					if(list_word.size()-1 > -1)
 					{
@@ -506,149 +598,24 @@ public class CorefFileExample {
 	
 	/**
 	 * pronoun list initial
+	 * verb white list initial
+	 * punc list initial
 	 * @return hashset<String>
 	 */
-	private static HashSet<String> initial_lexicon() {
+	private static void initial_lexicon() {
 		// TODO Auto-generated method stub
-		String lexicon_array[] = {"它","它们","他","他们","她","她们","自己","你们","我们","咱们","大家","这里","那里","这儿","那儿","我","你","其"};
-		HashSet<String> lexicons_pronouns = new HashSet<>();
-		for(String pronoun : lexicon_array)
+		//pronoun lexicons
+		String pronouns[] = {"它","它们","他","他们","她","她们","自己","你们","我们","咱们","大家","这里","那里","这儿","那儿","我","你","其"};
+		for(String pronoun : pronouns)
 			lexicons_pronouns.add(pronoun);
-		return lexicons_pronouns;
-	}
-
-	
-	/**
-	 * rules 
-	 * 1. speakers
-	 *    A对B说 我 你(们)
-	 *    A对B说 我(们)
-	 *    A对B说 你(们)
-	 *    A说 我(们)
-	 * 2. pronoun and no say
-	 * 
-	 * @param mentions
-	 */
-	private static void ruleBasedMentionsExtract(String text, ArrayList<String> mentions) {
-		System.out.println("Entering ruleBasedMentionsExtract...");
-		
-		//1. speaker me
-		ArrayList<String> res = new ArrayList<>();
-		if(text.contains("说"))
-		{
-			String head_before_say = text.substring(0, text.indexOf("说"));
-			String final_mention = "";
-			if(text.contains("对"))//A对B说
-			{
-				String head_before_to = text.substring(0, text.indexOf("对"));
-				if(text.contains("你"))
-				{
-					final_mention = get_str_between_words(text, "对", "说");
-//					System.out.println(text);
-//					System.out.println(text.substring(text.indexOf("对")+1));
-//					System.out.println(text.indexOf("对")+1);
-//					System.out.println(text.substring(text.indexOf("对")+1).indexOf("说"));
-//					System.out.println(text.indexOf("说"));
-					if(!lexicons_pronouns.contains(final_mention))//先行词不能是代词了
-					{
-						if(text.contains("你们"))
-							res.add(final_mention + "\t你们");
-						else
-							res.add(final_mention + "\t你");
-					}
-						
-				}
-				if(text.contains("我"))
-				{
-					for(String mention : mentions)
-						if(head_before_to.contains(mention))
-							final_mention = mention;//A对B说 对  之前的最后一个mention 代表A 我
-					if(!lexicons_pronouns.contains(final_mention))
-					{
-						if(text.contains("我们"))
-							res.add(final_mention + "\t我们");
-						else
-							res.add(final_mention + "\t我");
-					}
-				}
-			}
-			else//A说 我
-			{
-				if(text.contains("我"))
-				{
-					for(String mention : mentions)
-						if(head_before_say.contains(mention))
-							final_mention = mention;//说 之前的最后一个mention
-					if(!lexicons_pronouns.contains(final_mention))
-					{
-						if(text.contains("我们"))
-							res.add(final_mention + "\t我们");
-						else
-							res.add(final_mention + "\t我");
-					}
-				}
-			}
-		}
-		//2.pronoun && no say
-		else
-		{
-			//mention filter to reduce some bad mention
-			ArrayList<String> mentions_reduce = new ArrayList<>();
-			for(String mention : mentions)
-			{
-				if(mention.contains("，"))	continue;//这些 鹅 ， 红 嘴巴 ， 高额头 ，
-				if(mentions_reduce.size()>0 && mentions_reduce.get(mentions_reduce.size()-1).contains(mention)) continue; //它 它
-//				if(is_contain_pronoun(mention)) continue;//他们 后腿
-				mentions_reduce.add(mention);
-			}
-//			for(String reduces : mentions_reduce)
-//			{
-//				System.out.println(reduces);
-//			}
-			
-			//begin pronoun rule
-			int index = 0;
-			for(String mention : mentions_reduce)
-			{
-				//我是雪人 but not  我是我
-				if(index==0 && lexicons_pronouns.contains(mention) && mentions_reduce.size()>1 && !lexicons_pronouns.contains(mentions_reduce.get(1)))	
-					res.add(mentions_reduce.get(1) + "\t" + mention);
-				
-				if(index > 0 && lexicons_pronouns.contains(mention) && !lexicons_pronouns.contains(mentions_reduce.get((index-1))))
-				{
-					String word_front = mentions_reduce.get((index-1));
-					if(get_str_between_words(text, word_front, mention).equals("和"))//月亮和我
-					{
-						if(index > 1 && lexicons_pronouns.contains(mention) && !lexicons_pronouns.contains(mentions_reduce.get((index-2))))
-						{
-							res.add(mentions_reduce.get((index-2)) + "\t" + mention);
-						}
-					}
-					else//雪人是我
-					{
-						res.add(word_front + "\t" + mention);
-					}
-				}
-				if(index > 0 && lexicons_pronouns.contains(mention) && lexicons_pronouns.contains(mentions_reduce.get((index-1))))
-				{
-					int index_temp = index-1;
-					while(index_temp>-1 && lexicons_pronouns.contains(mentions_reduce.get(index_temp)))
-						index_temp --;
-					res.add(mentions_reduce.get(index_temp) + "\t" + mention);
-				}
-				
-				index++;
-			}
-		}
-		HashSet<String> pronoun_deweight = new HashSet<>();
-		for(String chain : res)
-		{
-			if(!pronoun_deweight.contains(chain.split("\t")[1]))
-			{
-				pronoun_deweight.add(chain.split("\t")[1]);
-				System.out.println(chain);
-			}
-		}
+		//verb white list
+		String white_list_array[] = {"当做","当成","看做","看成"};
+		for(String verb : white_list_array)
+			lexicons_verb_whitelist.add(verb);
+		//punctuation list
+		String punctuations[] = {"，","。","；","！","？"};
+		for(String punc : punctuations)
+			lexicons_punctuations.add(punc);
 	}
 
 	/**
@@ -664,17 +631,5 @@ public class CorefFileExample {
 				text.indexOf(word_front)+word_front.length(), 
 				text.indexOf(word_front)+word_front.length()+text.substring(text.indexOf(word_front)+word_front.length()).indexOf(word_rear)
 				);
-	}
-
-	/*
-	 * 判断一个mention是不是真包含一个代词 比如 “他们后腿” 这样的mention其实是失败的
-	 */
-	private static boolean is_contain_pronoun(String mention) {
-		// TODO Auto-generated method stub
-		boolean contains_pronoun = false;
-		for(String pronoun : lexicons_pronouns)
-			if(!mention.equals(pronoun) && mention.contains(pronoun))// true contain
-				contains_pronoun = true;
-		return contains_pronoun;
 	}
 }
